@@ -325,14 +325,18 @@ class UIController {
         this.extractor = new FrameExtractor();
         this.timeline = null;
         this.currentVideoFile = null;
-        
+        this.videoQueue = [];
+        this.currentSettings = null;
+        this.cancelRequested = false;
+
         this.elements = this.getElements();
         this.state = {
             videoLoaded: false,
             processing: false,
-            extractedZip: null
+            extractedZip: null,
+            queueMode: false
         };
-        
+
         this.init();
     }
 
@@ -344,13 +348,19 @@ class UIController {
             actionsSection: document.getElementById('actionsSection'),
             progressSection: document.getElementById('progressSection'),
             resultSection: document.getElementById('resultSection'),
-            
+
             uploadArea: document.getElementById('uploadArea'),
             videoInput: document.getElementById('videoInput'),
-            
+            videoQueue: document.getElementById('videoQueue'),
+            queueList: document.getElementById('queueList'),
+            queueCount: document.getElementById('queueCount'),
+            clearQueueBtn: document.getElementById('clearQueueBtn'),
+            addMoreBtn: document.getElementById('addMoreBtn'),
+            processQueueBtn: document.getElementById('processQueueBtn'),
+
             videoPlayer: document.getElementById('videoPlayer'),
             videoDuration: document.getElementById('videoDuration'),
-            
+
             timelineTrack: document.getElementById('timelineTrack'),
             timelineSelection: document.getElementById('timelineSelection'),
             handleStart: document.getElementById('handleStart'),
@@ -358,7 +368,8 @@ class UIController {
             startTime: document.getElementById('startTime'),
             endTime: document.getElementById('endTime'),
             selectionDuration: document.getElementById('selectionDuration'),
-            
+
+            settingsInfo: document.getElementById('settingsInfo'),
             frameRate: document.getElementById('frameRate'),
             scaleResolution: document.getElementById('scaleResolution'),
             imageFormat: document.getElementById('imageFormat'),
@@ -369,17 +380,20 @@ class UIController {
             originalResolution: document.getElementById('originalResolution'),
             estimatedFrames: document.getElementById('estimatedFrames'),
             estimatedSize: document.getElementById('estimatedSize'),
-            
+
             extractBtn: document.getElementById('extractBtn'),
             resetBtn: document.getElementById('resetBtn'),
-            
+
             progressText: document.getElementById('progressText'),
             progressPercent: document.getElementById('progressPercent'),
             progressFill: document.getElementById('progressFill'),
             progressDetails: document.getElementById('progressDetails'),
-            
+            progressVideoInfo: document.getElementById('progressVideoInfo'),
+            cancelBtn: document.getElementById('cancelBtn'),
+
             resultSummary: document.getElementById('resultSummary'),
-            downloadBtn: document.getElementById('downloadBtn')
+            downloadBtn: document.getElementById('downloadBtn'),
+            processAnotherBtn: document.getElementById('processAnotherBtn')
         };
     }
 
@@ -396,9 +410,9 @@ class UIController {
         });
 
         this.elements.videoInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                this.handleVideoFile(file);
+            const files = Array.from(e.target.files);
+            if (files.length > 0) {
+                this.handleVideoFiles(files);
             }
         });
 
@@ -414,11 +428,24 @@ class UIController {
         this.elements.uploadArea.addEventListener('drop', (e) => {
             e.preventDefault();
             this.elements.uploadArea.classList.remove('drag-over');
-            
-            const file = e.dataTransfer.files[0];
-            if (file && file.type.startsWith('video/')) {
-                this.handleVideoFile(file);
+
+            const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
+            if (files.length > 0) {
+                this.handleVideoFiles(files);
             }
+        });
+
+        // Queue management
+        this.elements.clearQueueBtn.addEventListener('click', () => {
+            this.clearQueue();
+        });
+
+        this.elements.addMoreBtn.addEventListener('click', () => {
+            this.elements.videoInput.click();
+        });
+
+        this.elements.processQueueBtn.addEventListener('click', () => {
+            this.processQueue();
         });
     }
 
@@ -433,6 +460,14 @@ class UIController {
 
         this.elements.downloadBtn.addEventListener('click', () => {
             this.downloadZip();
+        });
+
+        this.elements.processAnotherBtn.addEventListener('click', () => {
+            this.reset();
+        });
+
+        this.elements.cancelBtn.addEventListener('click', () => {
+            this.cancelProcessing();
         });
     }
 
@@ -451,11 +486,59 @@ class UIController {
         });
     }
 
+    async handleVideoFiles(files) {
+        // Filter valid video files
+        const videoFiles = files.filter(f => f.type.startsWith('video/'));
+
+        if (videoFiles.length === 0) {
+            alert('No valid video files selected. Please select video files (MP4, MOV, AVI, WebM, etc.)');
+            return;
+        }
+
+        if (videoFiles.length < files.length) {
+            alert(`${files.length - videoFiles.length} non-video file(s) were skipped.`);
+        }
+
+        // If only one file and not in queue mode, load directly
+        if (videoFiles.length === 1 && this.videoQueue.length === 0) {
+            await this.handleVideoFile(videoFiles[0]);
+        } else {
+            // Multiple files or adding to existing queue - use queue mode
+            this.state.queueMode = true;
+
+            // Show loading message
+            const loadingMsg = document.createElement('div');
+            loadingMsg.id = 'loadingMsg';
+            loadingMsg.style.textAlign = 'center';
+            loadingMsg.style.padding = '1rem';
+            loadingMsg.style.color = 'var(--text-secondary)';
+            loadingMsg.textContent = `Loading ${videoFiles.length} video(s)...`;
+            this.elements.uploadSection.appendChild(loadingMsg);
+
+            for (const file of videoFiles) {
+                await this.addToQueue(file);
+            }
+
+            // Remove loading message
+            const msg = document.getElementById('loadingMsg');
+            if (msg) msg.remove();
+
+            this.renderQueue();
+            this.elements.videoQueue.classList.remove('hidden');
+
+            // Show settings for queue mode
+            this.elements.settingsSection.classList.remove('hidden');
+            this.elements.settingsInfo.classList.remove('hidden');
+        }
+        // Reset file input
+        this.elements.videoInput.value = '';
+    }
+
     async handleVideoFile(file) {
         try {
             console.log('Loading video:', file.name);
             this.currentVideoFile = file;
-            
+
             const metadata = await this.extractor.loadVideo(file, this.elements.videoPlayer);
             console.log('Video metadata:', metadata);
 
@@ -489,6 +572,244 @@ class UIController {
         } catch (error) {
             console.error('Error loading video:', error);
             alert('Failed to load video file. Please try another file.');
+        }
+    }
+
+    async addToQueue(file) {
+        try {
+            // Create a temporary video element to extract metadata
+            const tempVideo = document.createElement('video');
+            tempVideo.preload = 'metadata';
+
+            const metadata = await new Promise((resolve, reject) => {
+                tempVideo.onloadedmetadata = () => {
+                    resolve({
+                        duration: tempVideo.duration,
+                        width: tempVideo.videoWidth,
+                        height: tempVideo.videoHeight
+                    });
+                    URL.revokeObjectURL(tempVideo.src);
+                };
+                tempVideo.onerror = () => {
+                    reject(new Error('Failed to load video metadata'));
+                };
+                tempVideo.src = URL.createObjectURL(file);
+            });
+
+            this.videoQueue.push({
+                id: Date.now() + Math.random(),
+                file: file,
+                metadata: metadata,
+                status: 'pending'
+            });
+
+        } catch (error) {
+            console.error('Error loading video metadata:', error);
+            alert(`Failed to load ${file.name}. Skipping.`);
+        }
+    }
+
+    renderQueue() {
+        this.elements.queueList.innerHTML = '';
+        this.elements.queueCount.textContent = this.videoQueue.length;
+
+        this.videoQueue.forEach((video, index) => {
+            const item = document.createElement('div');
+            item.className = 'queue-item';
+            if (video.status === 'processing') item.classList.add('processing');
+            if (video.status === 'completed') item.classList.add('completed');
+
+            const icon = document.createElement('div');
+            icon.className = 'queue-item-icon';
+            icon.textContent = video.status === 'completed' ? '✅' :
+                              video.status === 'processing' ? '⏳' : '📹';
+
+            const info = document.createElement('div');
+            info.className = 'queue-item-info';
+
+            const name = document.createElement('div');
+            name.className = 'queue-item-name';
+            name.textContent = video.file.name;
+
+            const meta = document.createElement('div');
+            meta.className = 'queue-item-meta';
+            meta.textContent = `${video.metadata.width}x${video.metadata.height} • ${Utils.formatTime(video.metadata.duration)} • ${Utils.formatBytes(video.file.size)}`;
+
+            info.appendChild(name);
+            info.appendChild(meta);
+
+            const status = document.createElement('div');
+            status.className = 'queue-item-status';
+            if (video.status === 'processing') status.classList.add('processing');
+            if (video.status === 'completed') status.classList.add('completed');
+            status.textContent = video.status === 'completed' ? 'Done' :
+                                video.status === 'processing' ? 'Processing...' : 'Pending';
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'queue-item-remove';
+            removeBtn.textContent = '×';
+            removeBtn.onclick = () => this.removeFromQueue(video.id);
+            if (video.status === 'processing') removeBtn.style.display = 'none';
+
+            item.appendChild(icon);
+            item.appendChild(info);
+            item.appendChild(status);
+            item.appendChild(removeBtn);
+
+            this.elements.queueList.appendChild(item);
+        });
+    }
+
+    removeFromQueue(videoId) {
+        this.videoQueue = this.videoQueue.filter(v => v.id !== videoId);
+        this.renderQueue();
+
+        if (this.videoQueue.length === 0) {
+            this.elements.videoQueue.classList.add('hidden');
+            this.state.queueMode = false;
+        }
+    }
+
+    clearQueue() {
+        if (confirm('Clear all videos from queue?')) {
+            this.videoQueue = [];
+            this.elements.videoQueue.classList.add('hidden');
+            this.state.queueMode = false;
+        }
+    }
+
+    async processQueue() {
+        if (this.videoQueue.length === 0) {
+            alert('Queue is empty. Please add videos first.');
+            return;
+        }
+
+        // Calculate total estimated frames
+        let totalFrames = 0;
+        const fps = parseInt(this.elements.frameRate.value) || 10;
+        this.videoQueue.forEach(video => {
+            totalFrames += Math.ceil(video.metadata.duration * fps);
+        });
+
+        const confirmed = confirm(
+            `Ready to process ${this.videoQueue.length} video(s)?\n\n` +
+            `Estimated total frames: ~${totalFrames}\n` +
+            `All videos will use the same extraction settings.\n` +
+            `Frames will be numbered continuously across all videos.`
+        );
+
+        if (!confirmed) return;
+
+        try {
+            this.state.processing = true;
+            this.cancelRequested = false;
+
+            // Hide upload section, show progress
+            this.elements.uploadSection.classList.add('hidden');
+            this.elements.progressSection.classList.remove('hidden');
+            this.elements.cancelBtn.classList.remove('hidden');
+
+            const allFrames = [];
+            let globalFrameNumber = 1;
+
+            // Get settings from first video (we'll apply same settings to all)
+            const settings = {
+                fps: parseInt(this.elements.frameRate.value),
+                scale: parseFloat(this.elements.scaleResolution.value),
+                format: this.elements.imageFormat.value,
+                quality: parseFloat(this.elements.jpegQuality.value),
+                namingPattern: this.elements.namingPattern.value,
+                customName: this.elements.customName.value || 'video'
+            };
+
+            this.currentSettings = settings;
+
+            for (let i = 0; i < this.videoQueue.length; i++) {
+                if (this.cancelRequested) {
+                    console.log('Processing cancelled by user');
+                    break;
+                }
+
+                const video = this.videoQueue[i];
+                video.status = 'processing';
+                this.renderQueue();
+
+                this.elements.progressVideoInfo.textContent = `Processing video ${i + 1} of ${this.videoQueue.length}: ${video.file.name}`;
+
+                // Load video
+                await this.extractor.loadVideo(video.file, this.elements.videoPlayer);
+
+                // Extract all frames from this video
+                const startTime = 0;
+                const endTime = video.metadata.duration;
+
+                this.updateProgress(`Extracting frames from video ${i + 1}...`, 0);
+
+                const videoFrames = await this.extractor.extractFrames(
+                    startTime,
+                    endTime,
+                    settings.fps,
+                    settings.scale,
+                    settings.format,
+                    settings.quality,
+                    (progress, status) => {
+                        const overallProgress = (i / this.videoQueue.length) + (progress / this.videoQueue.length) * 0.8;
+                        this.updateProgress(status, overallProgress);
+                    }
+                );
+
+                // Renumber frames to be continuous across videos
+                videoFrames.forEach(frame => {
+                    frame.frameNumber = globalFrameNumber++;
+                    allFrames.push(frame);
+                });
+
+                video.status = 'completed';
+                this.renderQueue();
+            }
+
+            if (this.cancelRequested) {
+                this.elements.progressSection.classList.add('hidden');
+                this.elements.uploadSection.classList.remove('hidden');
+                this.state.processing = false;
+                return;
+            }
+
+            // Create ZIP with all frames
+            this.updateProgress('Creating ZIP archive...', 0.9);
+
+            const zipBlob = await this.extractor.createZip(
+                allFrames,
+                settings.namingPattern,
+                settings.customName,
+                settings.format,
+                (progress) => {
+                    this.updateProgress('Creating ZIP archive...', 0.9 + (progress * 0.1));
+                }
+            );
+
+            this.state.extractedZip = zipBlob;
+
+            // Show result
+            this.elements.progressSection.classList.add('hidden');
+            this.elements.resultSection.classList.remove('hidden');
+            this.elements.resultSummary.textContent = `${allFrames.length} frames extracted from ${this.videoQueue.length} video(s) (${Utils.formatBytes(zipBlob.size)})`;
+
+        } catch (error) {
+            console.error('Queue processing error:', error);
+            alert('Failed to process videos: ' + error.message);
+
+            this.elements.progressSection.classList.add('hidden');
+            this.elements.uploadSection.classList.remove('hidden');
+        } finally {
+            this.state.processing = false;
+        }
+    }
+
+    cancelProcessing() {
+        if (confirm('Cancel processing?')) {
+            this.cancelRequested = true;
+            this.elements.cancelBtn.disabled = true;
         }
     }
 
@@ -527,9 +848,11 @@ class UIController {
 
         try {
             this.state.processing = true;
-            
+            this.cancelRequested = false;
+
             this.elements.actionsSection.classList.add('hidden');
             this.elements.progressSection.classList.remove('hidden');
+            this.elements.cancelBtn.classList.remove('hidden');
 
             const settings = {
                 startTime: this.timeline.getStartTime(),
@@ -546,7 +869,7 @@ class UIController {
 
             // Extract frames
             this.updateProgress('Extracting frames...', 0);
-            
+
             const frames = await this.extractor.extractFrames(
                 settings.startTime,
                 settings.endTime,
@@ -555,15 +878,22 @@ class UIController {
                 settings.format,
                 settings.quality,
                 (progress, status) => {
+                    if (this.cancelRequested) {
+                        throw new Error('Cancelled by user');
+                    }
                     this.updateProgress(status, progress * 0.8);
                 }
             );
+
+            if (this.cancelRequested) {
+                throw new Error('Cancelled by user');
+            }
 
             console.log(`Extracted ${frames.length} frames`);
 
             // Create ZIP
             this.updateProgress('Creating ZIP archive...', 0.8);
-            
+
             const zipBlob = await this.extractor.createZip(
                 frames,
                 settings.namingPattern,
@@ -578,17 +908,22 @@ class UIController {
 
             // Show result
             this.elements.progressSection.classList.add('hidden');
+            this.elements.cancelBtn.classList.add('hidden');
             this.elements.resultSection.classList.remove('hidden');
             this.elements.resultSummary.textContent = `${frames.length} frames extracted successfully (${Utils.formatBytes(zipBlob.size)})`;
 
         } catch (error) {
             console.error('Extraction error:', error);
-            alert('Failed to extract frames: ' + error.message);
-            
+            if (error.message !== 'Cancelled by user') {
+                alert('Failed to extract frames: ' + error.message);
+            }
+
             this.elements.progressSection.classList.add('hidden');
+            this.elements.cancelBtn.classList.add('hidden');
             this.elements.actionsSection.classList.remove('hidden');
         } finally {
             this.state.processing = false;
+            this.elements.cancelBtn.disabled = false;
         }
     }
 
@@ -616,6 +951,11 @@ class UIController {
         this.state.videoLoaded = false;
         this.state.processing = false;
         this.state.extractedZip = null;
+        this.state.queueMode = false;
+        this.cancelRequested = false;
+
+        // Clear video queue
+        this.videoQueue = [];
 
         if (this.elements.videoPlayer.src) {
             URL.revokeObjectURL(this.elements.videoPlayer.src);
@@ -625,10 +965,13 @@ class UIController {
         this.elements.videoInput.value = '';
 
         this.elements.uploadSection.classList.remove('hidden');
+        this.elements.videoQueue.classList.add('hidden');
         this.elements.videoSection.classList.add('hidden');
         this.elements.settingsSection.classList.add('hidden');
+        this.elements.settingsInfo.classList.add('hidden');
         this.elements.actionsSection.classList.add('hidden');
         this.elements.progressSection.classList.add('hidden');
+        this.elements.cancelBtn.classList.add('hidden');
         this.elements.resultSection.classList.add('hidden');
 
         if (this.timeline) {

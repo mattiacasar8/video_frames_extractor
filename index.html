@@ -17,9 +17,28 @@
         <section class="upload-section" id="uploadSection">
             <div class="upload-area" id="uploadArea">
                 <div class="upload-icon">📹</div>
-                <p class="upload-text">Drop video file here or click to browse</p>
-                <p class="upload-hint">Supported formats: MP4, MOV, AVI, WebM (max ~500MB)</p>
-                <input type="file" id="videoInput" accept="video/*" hidden>
+                <p class="upload-text">Drop video files here or click to browse</p>
+                <p class="upload-hint">Supported formats: MP4, MOV, AVI, WebM • Multiple videos supported</p>
+                <input type="file" id="videoInput" accept="video/*" multiple hidden>
+            </div>
+
+            <!-- Video Queue -->
+            <div class="video-queue hidden" id="videoQueue">
+                <div class="queue-header">
+                    <h3>Video Queue (<span id="queueCount">0</span>)</h3>
+                    <button class="btn-text" id="clearQueueBtn">Clear All</button>
+                </div>
+                <div class="queue-list" id="queueList"></div>
+                <div class="queue-actions">
+                    <button class="btn btn-secondary" id="addMoreBtn">
+                        <span class="btn-icon">➕</span>
+                        Add More Videos
+                    </button>
+                    <button class="btn btn-primary" id="processQueueBtn">
+                        <span class="btn-icon">🎬</span>
+                        Process All Videos
+                    </button>
+                </div>
             </div>
         </section>
 
@@ -64,7 +83,11 @@
         <!-- Extraction Settings -->
         <section class="settings-section hidden" id="settingsSection">
             <h2>Extraction Settings</h2>
-            
+
+            <div class="settings-info hidden" id="settingsInfo">
+                ℹ️ These settings will be applied to all videos in the queue
+            </div>
+
             <div class="settings-grid">
                 <div class="setting-group">
                     <label for="frameRate">Frame Rate (fps)</label>
@@ -136,6 +159,7 @@
 
         <!-- Progress Section -->
         <section class="progress-section hidden" id="progressSection">
+            <div class="progress-video-info" id="progressVideoInfo"></div>
             <div class="progress-info">
                 <span id="progressText">Processing...</span>
                 <span id="progressPercent">0%</span>
@@ -144,6 +168,10 @@
                 <div class="progress-fill" id="progressFill"></div>
             </div>
             <div class="progress-details" id="progressDetails"></div>
+            <button class="btn btn-secondary btn-cancel hidden" id="cancelBtn">
+                <span class="btn-icon">✕</span>
+                Cancel
+            </button>
         </section>
 
         <!-- Result Section -->
@@ -152,10 +180,16 @@
                 <div class="result-icon">✅</div>
                 <h3>Extraction Complete!</h3>
                 <p id="resultSummary">120 frames extracted</p>
-                <button class="btn btn-download" id="downloadBtn">
-                    <span class="btn-icon">📦</span>
-                    Download ZIP
-                </button>
+                <div class="result-actions">
+                    <button class="btn btn-download" id="downloadBtn">
+                        <span class="btn-icon">📦</span>
+                        Download ZIP
+                    </button>
+                    <button class="btn btn-secondary" id="processAnotherBtn">
+                        <span class="btn-icon">🔄</span>
+                        Process Another
+                    </button>
+                </div>
             </div>
         </section>
 
