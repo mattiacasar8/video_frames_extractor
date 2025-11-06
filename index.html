@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Frame Extractor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Video Frame Extractor</h1>
+            <p class="subtitle">Extract frames from video with precise control</p>
+        </header>
+
+        <!-- Upload Section -->
+        <section class="upload-section" id="uploadSection">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">📹</div>
+                <p class="upload-text">Drop video file here or click to browse</p>
+                <p class="upload-hint">Supported formats: MP4, MOV, AVI, WebM (max ~500MB)</p>
+                <input type="file" id="videoInput" accept="video/*" hidden>
+            </div>
+        </section>
+
+        <!-- Video Preview Section -->
+        <section class="video-section hidden" id="videoSection">
+            <div class="video-container">
+                <video id="videoPlayer" controls></video>
+            </div>
+
+            <!-- Timeline Controls -->
+            <div class="timeline-controls">
+                <div class="timeline-header">
+                    <span class="timeline-label">Select Region</span>
+                    <span class="timeline-duration" id="videoDuration">00:00</span>
+                </div>
+                
+                <div class="timeline-wrapper">
+                    <div class="timeline-track" id="timelineTrack">
+                        <div class="timeline-selection" id="timelineSelection"></div>
+                        <div class="timeline-handle timeline-handle-start" id="handleStart"></div>
+                        <div class="timeline-handle timeline-handle-end" id="handleEnd"></div>
+                    </div>
+                </div>
+
+                <div class="timeline-labels">
+                    <div class="time-input-group">
+                        <label>Start</label>
+                        <input type="text" id="startTime" value="00:00:00" readonly>
+                    </div>
+                    <div class="time-input-group">
+                        <label>End</label>
+                        <input type="text" id="endTime" value="00:00:00" readonly>
+                    </div>
+                    <div class="time-input-group">
+                        <label>Duration</label>
+                        <input type="text" id="selectionDuration" value="00:00:00" readonly>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Extraction Settings -->
+        <section class="settings-section hidden" id="settingsSection">
+            <h2>Extraction Settings</h2>
+            
+            <div class="settings-grid">
+                <div class="setting-group">
+                    <label for="frameRate">Frame Rate (fps)</label>
+                    <input type="number" id="frameRate" value="10" min="1" max="60" step="1">
+                    <span class="setting-hint">Higher = more frames (slower)</span>
+                </div>
+
+                <div class="setting-group">
+                    <label for="scaleResolution">Resolution Scale</label>
+                    <select id="scaleResolution">
+                        <option value="1">Original (100%)</option>
+                        <option value="0.75">75%</option>
+                        <option value="0.5" selected>50%</option>
+                        <option value="0.25">25%</option>
+                    </select>
+                    <span class="setting-hint">Original: <span id="originalResolution">1920x1080</span></span>
+                </div>
+
+                <div class="setting-group">
+                    <label for="imageFormat">Image Format</label>
+                    <select id="imageFormat">
+                        <option value="png">PNG (lossless)</option>
+                        <option value="jpg" selected>JPG (smaller)</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label for="jpegQuality">JPEG Quality</label>
+                    <input type="range" id="jpegQuality" min="0.1" max="1.0" step="0.1" value="0.85">
+                    <span class="setting-hint">Current: <span id="qualityDisplay">85</span>%</span>
+                </div>
+
+                <div class="setting-group full-width">
+                    <label for="namingPattern">File Naming Pattern</label>
+                    <input type="text" id="namingPattern" value="frame_{frame:04d}" placeholder="frame_{frame:04d}">
+                    <span class="setting-hint">Available: {frame}, {frame:04d}, {timestamp}, {name}</span>
+                </div>
+
+                <div class="setting-group full-width">
+                    <label for="customName">Custom Name (optional)</label>
+                    <input type="text" id="customName" placeholder="my_video">
+                    <span class="setting-hint">Used for {name} in pattern</span>
+                </div>
+            </div>
+
+            <div class="estimate-info" id="estimateInfo">
+                <div class="estimate-item">
+                    <span class="estimate-label">Estimated frames:</span>
+                    <span class="estimate-value" id="estimatedFrames">0</span>
+                </div>
+                <div class="estimate-item">
+                    <span class="estimate-label">Approx. size:</span>
+                    <span class="estimate-value" id="estimatedSize">~0 MB</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Action Buttons -->
+        <section class="actions-section hidden" id="actionsSection">
+            <button class="btn btn-primary" id="extractBtn">
+                <span class="btn-icon">🎬</span>
+                Extract Frames
+            </button>
+            <button class="btn btn-secondary" id="resetBtn">
+                <span class="btn-icon">🔄</span>
+                Reset
+            </button>
+        </section>
+
+        <!-- Progress Section -->
+        <section class="progress-section hidden" id="progressSection">
+            <div class="progress-info">
+                <span id="progressText">Processing...</span>
+                <span id="progressPercent">0%</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-details" id="progressDetails"></div>
+        </section>
+
+        <!-- Result Section -->
+        <section class="result-section hidden" id="resultSection">
+            <div class="result-card">
+                <div class="result-icon">✅</div>
+                <h3>Extraction Complete!</h3>
+                <p id="resultSummary">120 frames extracted</p>
+                <button class="btn btn-download" id="downloadBtn">
+                    <span class="btn-icon">📦</span>
+                    Download ZIP
+                </button>
+            </div>
+        </section>
+
+        <footer>
+            <p>Canvas API • Browser-based • No uploads • No dependencies</p>
+        </footer>
+    </div>
+
+    <!-- Only JSZip dependency -->
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
