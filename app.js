@@ -227,54 +227,61 @@ class ProgressTracker {
 
 class BlurDetector {
     // Calculate Laplacian variance for blur detection
-    static calculateBlurScore(imageData) {
+    // Optimized version with downsampling and pixel sampling
+    static calculateBlurScore(imageData, options = {}) {
+        const {
+            downsampleSize = 320,  // Downsample to this width for faster processing
+            sampleRate = 2         // Process every Nth pixel
+        } = options;
+
         const { width, height, data } = imageData;
 
-        // Convert to grayscale first
-        const gray = new Float32Array(width * height);
-        for (let i = 0; i < data.length; i += 4) {
-            const idx = i / 4;
-            gray[idx] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        }
+        // For small images, don't downsample
+        const shouldDownsample = width > downsampleSize;
+        const scale = shouldDownsample ? downsampleSize / width : 1;
+        const targetWidth = Math.floor(width * scale);
+        const targetHeight = Math.floor(height * scale);
 
-        // Apply Laplacian operator (simplified 3x3 kernel)
-        const laplacian = new Float32Array(width * height);
-        for (let y = 1; y < height - 1; y++) {
-            for (let x = 1; x < width - 1; x++) {
-                const idx = y * width + x;
-                const laplacianValue =
-                    -1 * gray[(y-1) * width + (x-1)] +
-                    -1 * gray[(y-1) * width + x] +
-                    -1 * gray[(y-1) * width + (x+1)] +
-                    -1 * gray[y * width + (x-1)] +
-                    8 * gray[idx] +
-                    -1 * gray[y * width + (x+1)] +
-                    -1 * gray[(y+1) * width + (x-1)] +
-                    -1 * gray[(y+1) * width + x] +
-                    -1 * gray[(y+1) * width + (x+1)];
+        // Convert to grayscale (downsampled)
+        const gray = new Float32Array(targetWidth * targetHeight);
 
-                laplacian[idx] = laplacianValue;
+        for (let y = 0; y < targetHeight; y++) {
+            for (let x = 0; x < targetWidth; x++) {
+                // Map back to original coordinates
+                const srcX = Math.floor(x / scale);
+                const srcY = Math.floor(y / scale);
+                const srcIdx = (srcY * width + srcX) * 4;
+
+                const idx = y * targetWidth + x;
+                gray[idx] = 0.299 * data[srcIdx] + 0.587 * data[srcIdx + 1] + 0.114 * data[srcIdx + 2];
             }
         }
 
-        // Calculate variance
-        let mean = 0;
-        let count = 0;
-        for (let i = 0; i < laplacian.length; i++) {
-            mean += laplacian[i];
-            count++;
-        }
-        mean /= count;
+        // Apply Laplacian operator with pixel sampling for speed
+        let varianceSum = 0;
+        let varianceCount = 0;
 
-        let variance = 0;
-        for (let i = 0; i < laplacian.length; i++) {
-            const diff = laplacian[i] - mean;
-            variance += diff * diff;
+        for (let y = 1; y < targetHeight - 1; y += sampleRate) {
+            for (let x = 1; x < targetWidth - 1; x += sampleRate) {
+                const idx = y * targetWidth + x;
+                const laplacianValue =
+                    -1 * gray[(y-1) * targetWidth + (x-1)] +
+                    -1 * gray[(y-1) * targetWidth + x] +
+                    -1 * gray[(y-1) * targetWidth + (x+1)] +
+                    -1 * gray[y * targetWidth + (x-1)] +
+                    8 * gray[idx] +
+                    -1 * gray[y * targetWidth + (x+1)] +
+                    -1 * gray[(y+1) * targetWidth + (x-1)] +
+                    -1 * gray[(y+1) * targetWidth + x] +
+                    -1 * gray[(y+1) * targetWidth + (x+1)];
+
+                varianceSum += laplacianValue * laplacianValue;
+                varianceCount++;
+            }
         }
-        variance /= count;
 
         // Return variance as blur score (higher = sharper)
-        return variance;
+        return varianceSum / varianceCount;
     }
 
     // Compare multiple frames and select the sharpest
@@ -337,6 +344,7 @@ class FrameExtractor {
     async extractFrames(startTime, endTime, fps, scale, format, quality, onProgress, options = {}) {
         const {
             useBlurDetection = false,
+            enableQualityMetrics = false,
             blurComparisonCount = 2,
             blurComparisonWindow = 1.0 // seconds
         } = options;
@@ -345,18 +353,13 @@ class FrameExtractor {
         const interval = 1 / fps;
         let frameCount = Math.ceil(duration * fps);
 
-        // If blur detection is enabled, we'll extract more frames for comparison
-        const extractionMultiplier = useBlurDetection ? blurComparisonCount : 1;
-        const extractionCount = frameCount * extractionMultiplier;
-
         const frames = [];
-        const candidateFrames = [];
 
         // Setup canvas dimensions
         this.canvas.width = Math.floor(this.videoMetadata.width * scale);
         this.canvas.height = Math.floor(this.videoMetadata.height * scale);
 
-        console.log(`Extracting ${extractionCount} frames from ${startTime}s to ${endTime}s`);
+        console.log(`Extracting ${frameCount} frames from ${startTime}s to ${endTime}s`);
         if (useBlurDetection) {
             console.log(`Blur detection enabled: comparing ${blurComparisonCount} frames per position`);
         }
@@ -377,9 +380,12 @@ class FrameExtractor {
                     await this.seekToTime(timestamp);
                     this.ctx.drawImage(this.videoElement, 0, 0, this.canvas.width, this.canvas.height);
 
-                    // Calculate blur score
+                    // Calculate blur score (optimized)
                     const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-                    const blurScore = BlurDetector.calculateBlurScore(imageData);
+                    const blurScore = BlurDetector.calculateBlurScore(imageData, {
+                        downsampleSize: 320,
+                        sampleRate: 2
+                    });
 
                     // Convert to blob
                     const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
@@ -410,9 +416,15 @@ class FrameExtractor {
                 await this.seekToTime(targetTimestamp);
                 this.ctx.drawImage(this.videoElement, 0, 0, this.canvas.width, this.canvas.height);
 
-                // Calculate blur score anyway for later analysis
-                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-                const blurScore = BlurDetector.calculateBlurScore(imageData);
+                // Only calculate blur score if quality metrics are enabled
+                let blurScore = 0;
+                if (enableQualityMetrics) {
+                    const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                    blurScore = BlurDetector.calculateBlurScore(imageData, {
+                        downsampleSize: 320,
+                        sampleRate: 2
+                    });
+                }
 
                 // Convert to blob
                 const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
@@ -429,7 +441,7 @@ class FrameExtractor {
                     blurScore: blurScore
                 });
 
-                // Update progress
+                // Update progress more frequently
                 const progress = (i + 1) / frameCount;
                 onProgress(progress, `Extracting frame ${i + 1}/${frameCount}`);
             }
@@ -573,6 +585,7 @@ class UIController {
             estimatedFrames: document.getElementById('estimatedFrames'),
             estimatedSize: document.getElementById('estimatedSize'),
 
+            enableQualityMetrics: document.getElementById('enableQualityMetrics'),
             useBlurDetection: document.getElementById('useBlurDetection'),
             blurSettings: document.getElementById('blurSettings'),
             blurComparisonCount: document.getElementById('blurComparisonCount'),
@@ -620,15 +633,28 @@ class UIController {
     }
 
     setupBlurDetection() {
+        // When blur detection is enabled, also enable quality metrics
         this.elements.useBlurDetection.addEventListener('change', () => {
             const blurSettings = document.querySelectorAll('.blur-settings');
             blurSettings.forEach(elem => {
                 if (this.elements.useBlurDetection.checked) {
                     elem.classList.remove('hidden');
+                    // Auto-enable quality metrics when blur detection is enabled
+                    this.elements.enableQualityMetrics.checked = true;
                 } else {
                     elem.classList.add('hidden');
                 }
             });
+        });
+
+        // Warn if blur detection is enabled but quality metrics is disabled
+        this.elements.enableQualityMetrics.addEventListener('change', () => {
+            if (!this.elements.enableQualityMetrics.checked && this.elements.useBlurDetection.checked) {
+                this.elements.useBlurDetection.checked = false;
+                const blurSettings = document.querySelectorAll('.blur-settings');
+                blurSettings.forEach(elem => elem.classList.add('hidden'));
+                alert('Blur detection requires quality metrics to be enabled. Both features have been disabled.');
+            }
         });
     }
 
@@ -1027,6 +1053,7 @@ class UIController {
             // Blur detection options
             const blurOptions = {
                 useBlurDetection: this.elements.useBlurDetection.checked,
+                enableQualityMetrics: this.elements.enableQualityMetrics.checked,
                 blurComparisonCount: parseInt(this.elements.blurComparisonCount.value),
                 blurComparisonWindow: parseFloat(this.elements.blurComparisonWindow.value)
             };
@@ -1178,6 +1205,7 @@ class UIController {
             // Blur detection options
             const blurOptions = {
                 useBlurDetection: this.elements.useBlurDetection.checked,
+                enableQualityMetrics: this.elements.enableQualityMetrics.checked,
                 blurComparisonCount: parseInt(this.elements.blurComparisonCount.value),
                 blurComparisonWindow: parseFloat(this.elements.blurComparisonWindow.value)
             };
@@ -1203,12 +1231,14 @@ class UIController {
                         throw new Error('Cancelled by user');
                     }
 
-                    // Update progress tracker
+                    // Update progress tracker with actual frame count
                     const frameCount = Math.floor(progress * estimatedFrames);
                     this.progressTracker.update(frameCount);
 
-                    // Update UI with ETA and speed
-                    this.updateProgressWithStats(status, progress * 0.99);
+                    // Update UI with ETA and speed (use setTimeout to ensure UI updates)
+                    setTimeout(() => {
+                        this.updateProgressWithStats(status, progress * 0.99);
+                    }, 0);
                 },
                 blurOptions
             );
@@ -1223,10 +1253,17 @@ class UIController {
             this.extractedFrames = frames;
             this.currentSettings = settings;
 
-            // Hide progress, show quality review
+            // Hide progress
             this.elements.progressSection.classList.add('hidden');
             this.elements.cancelBtn.classList.add('hidden');
-            this.showQualityReview(frames);
+
+            // Show quality review only if quality metrics were calculated
+            if (blurOptions.enableQualityMetrics && frames.length > 0 && frames[0].blurScore > 0) {
+                this.showQualityReview(frames);
+            } else {
+                // Skip quality review and go directly to ZIP creation
+                await this.proceedToZipCreation(frames);
+            }
 
         } catch (error) {
             console.error('Extraction error:', error);

@@ -132,13 +132,22 @@
                     <span class="setting-hint">Used for {name} in pattern</span>
                 </div>
 
+                <!-- Quality Metrics Settings -->
+                <div class="setting-group full-width">
+                    <label>
+                        <input type="checkbox" id="enableQualityMetrics">
+                        Enable Quality Metrics (Blur Analysis)
+                    </label>
+                    <span class="setting-hint">Calculate blur scores for post-processing review (slight performance cost)</span>
+                </div>
+
                 <!-- Blur Detection Settings -->
                 <div class="setting-group full-width">
                     <label>
                         <input type="checkbox" id="useBlurDetection">
-                        Enable Blur Detection (Smart Frame Selection)
+                        Enable Smart Frame Selection (Blur Detection)
                     </label>
-                    <span class="setting-hint">Extracts multiple frames and selects the sharpest one</span>
+                    <span class="setting-hint">Extracts multiple frames and selects the sharpest one (significant performance cost)</span>
                 </div>
 
                 <div class="setting-group blur-settings hidden" id="blurSettings">
