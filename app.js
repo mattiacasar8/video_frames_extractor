@@ -475,6 +475,10 @@ class UIController {
         ['frameRate', 'scaleResolution', 'imageFormat', 'jpegQuality'].forEach(id => {
             this.elements[id].addEventListener('change', () => {
                 this.updateEstimates();
+                // Also update queue estimates if in queue mode
+                if (this.state.queueMode && this.videoQueue.length > 0) {
+                    this.updateQueueEstimates();
+                }
             });
             this.elements[id].addEventListener('input', () => {
                 if (id === 'jpegQuality') {
@@ -482,6 +486,10 @@ class UIController {
                     this.elements.qualityDisplay.textContent = quality;
                 }
                 this.updateEstimates();
+                // Also update queue estimates if in queue mode
+                if (this.state.queueMode && this.videoQueue.length > 0) {
+                    this.updateQueueEstimates();
+                }
             });
         });
     }
@@ -658,6 +666,48 @@ class UIController {
 
             this.elements.queueList.appendChild(item);
         });
+
+        // Update estimates for queue
+        this.updateQueueEstimates();
+    }
+
+    updateQueueEstimates() {
+        if (this.videoQueue.length === 0) return;
+
+        const fps = parseInt(this.elements.frameRate.value) || 10;
+        const scale = parseFloat(this.elements.scaleResolution.value) || 0.5;
+        const format = this.elements.imageFormat.value || 'jpg';
+        const quality = parseFloat(this.elements.jpegQuality.value) || 0.85;
+
+        let totalDuration = 0;
+        let totalFrames = 0;
+        let totalEstimatedSize = 0;
+
+        // Calculate totals for all videos in queue
+        this.videoQueue.forEach(video => {
+            totalDuration += video.metadata.duration;
+            const videoFrames = Math.ceil(video.metadata.duration * fps);
+            totalFrames += videoFrames;
+
+            // Estimate size for this video's frames
+            const scaledWidth = video.metadata.width * scale;
+            const scaledHeight = video.metadata.height * scale;
+            const pixels = scaledWidth * scaledHeight;
+
+            let bytesPerPixel;
+            if (format === 'png') {
+                bytesPerPixel = 3;
+            } else {
+                bytesPerPixel = 0.2 + (quality * 0.8);
+            }
+
+            const estimatedBytesPerFrame = pixels * bytesPerPixel;
+            totalEstimatedSize += videoFrames * estimatedBytesPerFrame;
+        });
+
+        // Update the UI with queue totals
+        this.elements.estimatedFrames.textContent = `${totalFrames} (across ${this.videoQueue.length} video${this.videoQueue.length > 1 ? 's' : ''})`;
+        this.elements.estimatedSize.textContent = Utils.formatBytes(totalEstimatedSize);
     }
 
     removeFromQueue(videoId) {
