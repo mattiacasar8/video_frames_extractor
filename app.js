@@ -354,6 +354,7 @@ class FrameExtractor {
         let frameCount = Math.ceil(duration * fps);
 
         const frames = [];
+        const usedTimestamps = new Set(); // Track used timestamps to avoid duplicates
 
         // Setup canvas dimensions
         this.canvas.width = Math.floor(this.videoMetadata.width * scale);
@@ -375,7 +376,16 @@ class FrameExtractor {
 
                 for (let j = 0; j < blurComparisonCount; j++) {
                     const offset = (j - (blurComparisonCount - 1) / 2) * windowPerFrame;
-                    const timestamp = Math.max(startTime, Math.min(endTime, targetTimestamp + offset));
+                    let timestamp = Math.max(startTime, Math.min(endTime, targetTimestamp + offset));
+
+                    // Round to 3 decimal places to avoid floating point issues
+                    timestamp = Math.round(timestamp * 1000) / 1000;
+
+                    // Skip if this timestamp was already used
+                    if (usedTimestamps.has(timestamp)) {
+                        console.log(`Skipping duplicate timestamp: ${timestamp}`);
+                        continue;
+                    }
 
                     await this.seekToTime(timestamp);
                     this.ctx.drawImage(this.videoElement, 0, 0, this.canvas.width, this.canvas.height);
@@ -403,9 +413,12 @@ class FrameExtractor {
                     });
                 }
 
-                // Select the sharpest frame
-                const sharpestFrame = BlurDetector.selectSharpestFrame(comparisonFrames);
-                frames.push(sharpestFrame);
+                // Select the sharpest frame from candidates
+                if (comparisonFrames.length > 0) {
+                    const sharpestFrame = BlurDetector.selectSharpestFrame(comparisonFrames);
+                    usedTimestamps.add(sharpestFrame.timestamp); // Mark as used
+                    frames.push(sharpestFrame);
+                }
 
                 // Update progress
                 const progress = (i + 1) / frameCount;
@@ -447,6 +460,7 @@ class FrameExtractor {
             }
         }
 
+        console.log(`Extracted ${frames.length} unique frames (${usedTimestamps.size} unique timestamps)`);
         return frames;
     }
 
@@ -1235,10 +1249,8 @@ class UIController {
                     const frameCount = Math.floor(progress * estimatedFrames);
                     this.progressTracker.update(frameCount);
 
-                    // Update UI with ETA and speed (use setTimeout to ensure UI updates)
-                    setTimeout(() => {
-                        this.updateProgressWithStats(status, progress * 0.99);
-                    }, 0);
+                    // Update UI with ETA and speed immediately (no setTimeout needed)
+                    this.updateProgressWithStats(status, progress * 0.99);
                 },
                 blurOptions
             );
@@ -1257,11 +1269,16 @@ class UIController {
             this.elements.progressSection.classList.add('hidden');
             this.elements.cancelBtn.classList.add('hidden');
 
-            // Show quality review only if quality metrics were calculated
-            if (blurOptions.enableQualityMetrics && frames.length > 0 && frames[0].blurScore > 0) {
+            // Check if any frames have blur scores calculated
+            const hasBlurScores = frames.length > 0 && frames.some(f => f.blurScore > 0);
+
+            // Show quality review if blur scores were calculated
+            if (hasBlurScores) {
+                console.log('Showing quality review - blur scores detected');
                 this.showQualityReview(frames);
             } else {
                 // Skip quality review and go directly to ZIP creation
+                console.log('Skipping quality review - no blur scores');
                 await this.proceedToZipCreation(frames);
             }
 
@@ -1289,12 +1306,17 @@ class UIController {
     updateProgressWithStats(text, percent) {
         this.updateProgress(text, percent);
 
-        if (this.progressTracker) {
+        if (this.progressTracker && this.progressTracker.processedFrames > 0) {
             const speed = this.progressTracker.getSpeed();
             const eta = this.progressTracker.formatETA();
 
             this.elements.progressSpeed.textContent = `${speed.toFixed(1)} fps`;
             this.elements.progressETA.textContent = eta;
+
+            // Log for debugging
+            if (this.progressTracker.processedFrames % 10 === 0) {
+                console.log(`Progress: ${Math.round(percent * 100)}% | Speed: ${speed.toFixed(1)} fps | ETA: ${eta}`);
+            }
         }
     }
 
@@ -1304,16 +1326,29 @@ class UIController {
             return;
         }
 
+        // Filter out frames without blur scores
+        const framesWithScores = frames.filter(f => f.blurScore > 0);
+        if (framesWithScores.length === 0) {
+            console.log('No frames with blur scores, skipping quality review');
+            this.proceedToZipCreation(frames);
+            return;
+        }
+
         // Calculate blur score statistics
-        const blurScores = frames.map(f => f.blurScore).sort((a, b) => a - b);
+        const blurScores = framesWithScores.map(f => f.blurScore).sort((a, b) => a - b);
         const minScore = blurScores[0];
         const maxScore = blurScores[blurScores.length - 1];
         const medianScore = blurScores[Math.floor(blurScores.length / 2)];
 
+        console.log(`Blur score range: ${minScore.toFixed(0)} - ${maxScore.toFixed(0)}, median: ${medianScore.toFixed(0)}`);
+
         // Set threshold range based on scores
         this.elements.blurThreshold.min = Math.floor(minScore);
         this.elements.blurThreshold.max = Math.ceil(maxScore);
-        this.elements.blurThreshold.value = Math.floor(medianScore * 0.5); // Start at half median
+
+        // Start at 30% of the range above minimum (aggressive default)
+        const defaultThreshold = minScore + (maxScore - minScore) * 0.3;
+        this.elements.blurThreshold.value = Math.floor(defaultThreshold);
 
         // Update stats
         this.elements.totalFramesCount.textContent = frames.length;
@@ -1325,6 +1360,7 @@ class UIController {
 
         // Show quality section
         this.elements.qualitySection.classList.remove('hidden');
+        console.log('Quality review section displayed');
     }
 
     updateQualityPreview() {
