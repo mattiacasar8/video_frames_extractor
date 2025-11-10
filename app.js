@@ -1126,25 +1126,28 @@ class UIController {
                 return;
             }
 
-            // Create ZIP with all frames
-            this.updateProgress('Creating ZIP archive...', 0.9);
+            console.log(`Queue complete: Extracted ${allFrames.length} total frames from ${this.videoQueue.length} videos`);
 
-            const zipBlob = await this.extractor.createZip(
-                allFrames,
-                settings.namingPattern,
-                settings.customName,
-                settings.format,
-                (progress) => {
-                    this.updateProgress('Creating ZIP archive...', 0.9 + (progress * 0.1));
-                }
-            );
+            // Store frames for quality review
+            this.extractedFrames = allFrames;
+            this.currentSettings = settings;
 
-            this.state.extractedZip = zipBlob;
-
-            // Show result
+            // Hide progress
             this.elements.progressSection.classList.add('hidden');
-            this.elements.resultSection.classList.remove('hidden');
-            this.elements.resultSummary.textContent = `${allFrames.length} frames extracted from ${this.videoQueue.length} video(s) (${Utils.formatBytes(zipBlob.size)})`;
+            this.elements.cancelBtn.classList.add('hidden');
+
+            // Check if any frames have blur scores calculated
+            const hasBlurScores = allFrames.length > 0 && allFrames.some(f => f.blurScore > 0);
+
+            // Show quality review if blur scores were calculated
+            if (hasBlurScores) {
+                console.log('Showing quality review for batch - blur scores detected');
+                this.showQualityReview(allFrames);
+            } else {
+                // Skip quality review and go directly to ZIP creation
+                console.log('Skipping quality review for batch - no blur scores');
+                await this.proceedToZipCreation(allFrames);
+            }
 
         } catch (error) {
             console.error('Queue processing error:', error);
