@@ -162,6 +162,138 @@ class TimelineController {
 }
 
 // ==========================================
+// Progress Tracker
+// ==========================================
+
+class ProgressTracker {
+    constructor(totalFrames) {
+        this.totalFrames = totalFrames;
+        this.processedFrames = 0;
+        this.startTime = Date.now();
+        this.lastUpdateTime = Date.now();
+        this.framesSinceLastUpdate = 0;
+    }
+
+    update(framesProcessed) {
+        const now = Date.now();
+        const deltaFrames = framesProcessed - this.processedFrames;
+
+        this.processedFrames = framesProcessed;
+        this.framesSinceLastUpdate += deltaFrames;
+
+        // Update speed calculation every 500ms
+        if (now - this.lastUpdateTime > 500) {
+            this.lastUpdateTime = now;
+            this.framesSinceLastUpdate = 0;
+        }
+    }
+
+    getETA() {
+        const elapsed = (Date.now() - this.startTime) / 1000; // seconds
+        if (this.processedFrames === 0) return 0;
+
+        const rate = this.processedFrames / elapsed; // frames per second
+        const remaining = this.totalFrames - this.processedFrames;
+        return remaining / rate; // seconds
+    }
+
+    getSpeed() {
+        const elapsed = (Date.now() - this.startTime) / 1000;
+        if (elapsed === 0) return 0;
+        return this.processedFrames / elapsed; // frames per second
+    }
+
+    formatETA() {
+        const eta = this.getETA();
+        if (!isFinite(eta) || eta < 0) return 'Calculating...';
+
+        const minutes = Math.floor(eta / 60);
+        const seconds = Math.floor(eta % 60);
+
+        if (minutes > 0) {
+            return `${minutes}m ${seconds}s`;
+        }
+        return `${seconds}s`;
+    }
+
+    getProgress() {
+        return this.processedFrames / this.totalFrames;
+    }
+}
+
+// ==========================================
+// Blur Detection
+// ==========================================
+
+class BlurDetector {
+    // Calculate Laplacian variance for blur detection
+    static calculateBlurScore(imageData) {
+        const { width, height, data } = imageData;
+
+        // Convert to grayscale first
+        const gray = new Float32Array(width * height);
+        for (let i = 0; i < data.length; i += 4) {
+            const idx = i / 4;
+            gray[idx] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        }
+
+        // Apply Laplacian operator (simplified 3x3 kernel)
+        const laplacian = new Float32Array(width * height);
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                const idx = y * width + x;
+                const laplacianValue =
+                    -1 * gray[(y-1) * width + (x-1)] +
+                    -1 * gray[(y-1) * width + x] +
+                    -1 * gray[(y-1) * width + (x+1)] +
+                    -1 * gray[y * width + (x-1)] +
+                    8 * gray[idx] +
+                    -1 * gray[y * width + (x+1)] +
+                    -1 * gray[(y+1) * width + (x-1)] +
+                    -1 * gray[(y+1) * width + x] +
+                    -1 * gray[(y+1) * width + (x+1)];
+
+                laplacian[idx] = laplacianValue;
+            }
+        }
+
+        // Calculate variance
+        let mean = 0;
+        let count = 0;
+        for (let i = 0; i < laplacian.length; i++) {
+            mean += laplacian[i];
+            count++;
+        }
+        mean /= count;
+
+        let variance = 0;
+        for (let i = 0; i < laplacian.length; i++) {
+            const diff = laplacian[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= count;
+
+        // Return variance as blur score (higher = sharper)
+        return variance;
+    }
+
+    // Compare multiple frames and select the sharpest
+    static selectSharpestFrame(frames) {
+        let maxScore = -1;
+        let sharpestFrame = null;
+
+        for (const frame of frames) {
+            if (frame.blurScore > maxScore) {
+                maxScore = frame.blurScore;
+                sharpestFrame = frame;
+            }
+        }
+
+        return sharpestFrame;
+    }
+}
+
+// ==========================================
 // Frame Extractor (Canvas API)
 // ==========================================
 
@@ -202,49 +334,107 @@ class FrameExtractor {
         });
     }
 
-    async extractFrames(startTime, endTime, fps, scale, format, quality, onProgress) {
+    async extractFrames(startTime, endTime, fps, scale, format, quality, onProgress, options = {}) {
+        const {
+            useBlurDetection = false,
+            blurComparisonCount = 2,
+            blurComparisonWindow = 1.0 // seconds
+        } = options;
+
         const duration = endTime - startTime;
         const interval = 1 / fps;
-        const frameCount = Math.ceil(duration * fps);
-        
+        let frameCount = Math.ceil(duration * fps);
+
+        // If blur detection is enabled, we'll extract more frames for comparison
+        const extractionMultiplier = useBlurDetection ? blurComparisonCount : 1;
+        const extractionCount = frameCount * extractionMultiplier;
+
         const frames = [];
-        
+        const candidateFrames = [];
+
         // Setup canvas dimensions
         this.canvas.width = Math.floor(this.videoMetadata.width * scale);
         this.canvas.height = Math.floor(this.videoMetadata.height * scale);
-        
-        console.log(`Extracting ${frameCount} frames from ${startTime}s to ${endTime}s at ${fps} fps`);
-        console.log(`Canvas size: ${this.canvas.width}x${this.canvas.height}`);
-        
+
+        console.log(`Extracting ${extractionCount} frames from ${startTime}s to ${endTime}s`);
+        if (useBlurDetection) {
+            console.log(`Blur detection enabled: comparing ${blurComparisonCount} frames per position`);
+        }
+
         // Extract frames
         for (let i = 0; i < frameCount; i++) {
-            const timestamp = startTime + (i * interval);
-            
-            // Seek to frame
-            await this.seekToTime(timestamp);
-            
-            // Draw frame to canvas
-            this.ctx.drawImage(this.videoElement, 0, 0, this.canvas.width, this.canvas.height);
-            
-            // Convert to blob
-            const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
-            const blob = await new Promise(resolve => {
-                this.canvas.toBlob(resolve, mimeType, quality);
-            });
-            
-            const data = new Uint8Array(await blob.arrayBuffer());
-            
-            frames.push({
-                data: data,
-                timestamp: timestamp,
-                frameNumber: i + 1
-            });
-            
-            // Update progress
-            const progress = (i + 1) / frameCount;
-            onProgress(progress, `Extracting frame ${i + 1}/${frameCount}`);
+            const targetTimestamp = startTime + (i * interval);
+
+            if (useBlurDetection) {
+                // Extract multiple frames around this timestamp for comparison
+                const comparisonFrames = [];
+                const windowPerFrame = blurComparisonWindow / blurComparisonCount;
+
+                for (let j = 0; j < blurComparisonCount; j++) {
+                    const offset = (j - (blurComparisonCount - 1) / 2) * windowPerFrame;
+                    const timestamp = Math.max(startTime, Math.min(endTime, targetTimestamp + offset));
+
+                    await this.seekToTime(timestamp);
+                    this.ctx.drawImage(this.videoElement, 0, 0, this.canvas.width, this.canvas.height);
+
+                    // Calculate blur score
+                    const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                    const blurScore = BlurDetector.calculateBlurScore(imageData);
+
+                    // Convert to blob
+                    const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+                    const blob = await new Promise(resolve => {
+                        this.canvas.toBlob(resolve, mimeType, quality);
+                    });
+
+                    const data = new Uint8Array(await blob.arrayBuffer());
+
+                    comparisonFrames.push({
+                        data: data,
+                        timestamp: timestamp,
+                        blurScore: blurScore,
+                        frameNumber: i + 1
+                    });
+                }
+
+                // Select the sharpest frame
+                const sharpestFrame = BlurDetector.selectSharpestFrame(comparisonFrames);
+                frames.push(sharpestFrame);
+
+                // Update progress
+                const progress = (i + 1) / frameCount;
+                onProgress(progress, `Extracting & analyzing frame ${i + 1}/${frameCount}`);
+
+            } else {
+                // Standard extraction without blur detection
+                await this.seekToTime(targetTimestamp);
+                this.ctx.drawImage(this.videoElement, 0, 0, this.canvas.width, this.canvas.height);
+
+                // Calculate blur score anyway for later analysis
+                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                const blurScore = BlurDetector.calculateBlurScore(imageData);
+
+                // Convert to blob
+                const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+                const blob = await new Promise(resolve => {
+                    this.canvas.toBlob(resolve, mimeType, quality);
+                });
+
+                const data = new Uint8Array(await blob.arrayBuffer());
+
+                frames.push({
+                    data: data,
+                    timestamp: targetTimestamp,
+                    frameNumber: i + 1,
+                    blurScore: blurScore
+                });
+
+                // Update progress
+                const progress = (i + 1) / frameCount;
+                onProgress(progress, `Extracting frame ${i + 1}/${frameCount}`);
+            }
         }
-        
+
         return frames;
     }
 
@@ -328,6 +518,8 @@ class UIController {
         this.videoQueue = [];
         this.currentSettings = null;
         this.cancelRequested = false;
+        this.extractedFrames = [];
+        this.progressTracker = null;
 
         this.elements = this.getElements();
         this.state = {
@@ -381,6 +573,11 @@ class UIController {
             estimatedFrames: document.getElementById('estimatedFrames'),
             estimatedSize: document.getElementById('estimatedSize'),
 
+            useBlurDetection: document.getElementById('useBlurDetection'),
+            blurSettings: document.getElementById('blurSettings'),
+            blurComparisonCount: document.getElementById('blurComparisonCount'),
+            blurComparisonWindow: document.getElementById('blurComparisonWindow'),
+
             extractBtn: document.getElementById('extractBtn'),
             resetBtn: document.getElementById('resetBtn'),
 
@@ -389,7 +586,23 @@ class UIController {
             progressFill: document.getElementById('progressFill'),
             progressDetails: document.getElementById('progressDetails'),
             progressVideoInfo: document.getElementById('progressVideoInfo'),
+            progressSpeed: document.getElementById('progressSpeed'),
+            progressETA: document.getElementById('progressETA'),
             cancelBtn: document.getElementById('cancelBtn'),
+
+            qualitySection: document.getElementById('qualitySection'),
+            blurThreshold: document.getElementById('blurThreshold'),
+            totalFramesCount: document.getElementById('totalFramesCount'),
+            keptFramesCount: document.getElementById('keptFramesCount'),
+            removedFramesCount: document.getElementById('removedFramesCount'),
+            maxBlurScore: document.getElementById('maxBlurScore'),
+            thresholdBlurScore: document.getElementById('thresholdBlurScore'),
+            minBlurScore: document.getElementById('minBlurScore'),
+            sharpestPreview: document.getElementById('sharpestPreview'),
+            thresholdPreview: document.getElementById('thresholdPreview'),
+            blurriestPreview: document.getElementById('blurriestPreview'),
+            skipQualityBtn: document.getElementById('skipQualityBtn'),
+            applyQualityBtn: document.getElementById('applyQualityBtn'),
 
             resultSummary: document.getElementById('resultSummary'),
             downloadBtn: document.getElementById('downloadBtn'),
@@ -401,7 +614,46 @@ class UIController {
         this.setupUpload();
         this.setupActions();
         this.setupSettings();
+        this.setupBlurDetection();
+        this.setupQuality();
         console.log('Video Frame Extractor initialized (Canvas API version)');
+    }
+
+    setupBlurDetection() {
+        this.elements.useBlurDetection.addEventListener('change', () => {
+            const blurSettings = document.querySelectorAll('.blur-settings');
+            blurSettings.forEach(elem => {
+                if (this.elements.useBlurDetection.checked) {
+                    elem.classList.remove('hidden');
+                } else {
+                    elem.classList.add('hidden');
+                }
+            });
+        });
+    }
+
+    setupQuality() {
+        this.elements.blurThreshold.addEventListener('input', () => {
+            if (this.extractedFrames.length > 0) {
+                this.updateQualityPreview();
+            }
+        });
+
+        this.elements.skipQualityBtn.addEventListener('click', () => {
+            this.proceedToZipCreation(this.extractedFrames);
+        });
+
+        this.elements.applyQualityBtn.addEventListener('click', () => {
+            const threshold = parseFloat(this.elements.blurThreshold.value);
+            const filteredFrames = this.extractedFrames.filter(f => f.blurScore >= threshold);
+
+            if (filteredFrames.length === 0) {
+                alert('All frames would be removed with this threshold. Please adjust the threshold.');
+                return;
+            }
+
+            this.proceedToZipCreation(filteredFrames);
+        });
     }
 
     setupUpload() {
@@ -772,6 +1024,13 @@ class UIController {
                 customName: this.elements.customName.value || 'video'
             };
 
+            // Blur detection options
+            const blurOptions = {
+                useBlurDetection: this.elements.useBlurDetection.checked,
+                blurComparisonCount: parseInt(this.elements.blurComparisonCount.value),
+                blurComparisonWindow: parseFloat(this.elements.blurComparisonWindow.value)
+            };
+
             this.currentSettings = settings;
 
             for (let i = 0; i < this.videoQueue.length; i++) {
@@ -805,7 +1064,8 @@ class UIController {
                     (progress, status) => {
                         const overallProgress = (i / this.videoQueue.length) + (progress / this.videoQueue.length) * 0.8;
                         this.updateProgress(status, overallProgress);
-                    }
+                    },
+                    blurOptions
                 );
 
                 // Renumber frames to be continuous across videos
@@ -915,9 +1175,20 @@ class UIController {
                 customName: this.elements.customName.value
             };
 
-            console.log('Extraction settings:', settings);
+            // Blur detection options
+            const blurOptions = {
+                useBlurDetection: this.elements.useBlurDetection.checked,
+                blurComparisonCount: parseInt(this.elements.blurComparisonCount.value),
+                blurComparisonWindow: parseFloat(this.elements.blurComparisonWindow.value)
+            };
 
-            // Extract frames
+            console.log('Extraction settings:', settings, blurOptions);
+
+            // Initialize progress tracker
+            const estimatedFrames = Math.ceil((settings.endTime - settings.startTime) * settings.fps);
+            this.progressTracker = new ProgressTracker(estimatedFrames);
+
+            // Extract frames with progress tracking
             this.updateProgress('Extracting frames...', 0);
 
             const frames = await this.extractor.extractFrames(
@@ -931,8 +1202,15 @@ class UIController {
                     if (this.cancelRequested) {
                         throw new Error('Cancelled by user');
                     }
-                    this.updateProgress(status, progress * 0.8);
-                }
+
+                    // Update progress tracker
+                    const frameCount = Math.floor(progress * estimatedFrames);
+                    this.progressTracker.update(frameCount);
+
+                    // Update UI with ETA and speed
+                    this.updateProgressWithStats(status, progress * 0.99);
+                },
+                blurOptions
             );
 
             if (this.cancelRequested) {
@@ -941,26 +1219,14 @@ class UIController {
 
             console.log(`Extracted ${frames.length} frames`);
 
-            // Create ZIP
-            this.updateProgress('Creating ZIP archive...', 0.8);
+            // Store frames for quality review
+            this.extractedFrames = frames;
+            this.currentSettings = settings;
 
-            const zipBlob = await this.extractor.createZip(
-                frames,
-                settings.namingPattern,
-                settings.customName,
-                settings.format,
-                (progress) => {
-                    this.updateProgress('Creating ZIP archive...', 0.8 + (progress * 0.2));
-                }
-            );
-
-            this.state.extractedZip = zipBlob;
-
-            // Show result
+            // Hide progress, show quality review
             this.elements.progressSection.classList.add('hidden');
             this.elements.cancelBtn.classList.add('hidden');
-            this.elements.resultSection.classList.remove('hidden');
-            this.elements.resultSummary.textContent = `${frames.length} frames extracted successfully (${Utils.formatBytes(zipBlob.size)})`;
+            this.showQualityReview(frames);
 
         } catch (error) {
             console.error('Extraction error:', error);
@@ -981,6 +1247,136 @@ class UIController {
         this.elements.progressText.textContent = text;
         this.elements.progressPercent.textContent = `${Math.round(percent * 100)}%`;
         this.elements.progressFill.style.width = `${percent * 100}%`;
+    }
+
+    updateProgressWithStats(text, percent) {
+        this.updateProgress(text, percent);
+
+        if (this.progressTracker) {
+            const speed = this.progressTracker.getSpeed();
+            const eta = this.progressTracker.formatETA();
+
+            this.elements.progressSpeed.textContent = `${speed.toFixed(1)} fps`;
+            this.elements.progressETA.textContent = eta;
+        }
+    }
+
+    showQualityReview(frames) {
+        if (frames.length === 0) {
+            alert('No frames to review');
+            return;
+        }
+
+        // Calculate blur score statistics
+        const blurScores = frames.map(f => f.blurScore).sort((a, b) => a - b);
+        const minScore = blurScores[0];
+        const maxScore = blurScores[blurScores.length - 1];
+        const medianScore = blurScores[Math.floor(blurScores.length / 2)];
+
+        // Set threshold range based on scores
+        this.elements.blurThreshold.min = Math.floor(minScore);
+        this.elements.blurThreshold.max = Math.ceil(maxScore);
+        this.elements.blurThreshold.value = Math.floor(medianScore * 0.5); // Start at half median
+
+        // Update stats
+        this.elements.totalFramesCount.textContent = frames.length;
+        this.elements.maxBlurScore.textContent = maxScore.toFixed(0);
+        this.elements.minBlurScore.textContent = minScore.toFixed(0);
+
+        // Render preview
+        this.updateQualityPreview();
+
+        // Show quality section
+        this.elements.qualitySection.classList.remove('hidden');
+    }
+
+    updateQualityPreview() {
+        if (this.extractedFrames.length === 0) return;
+
+        const threshold = parseFloat(this.elements.blurThreshold.value);
+        const frames = this.extractedFrames;
+
+        // Find frames at boundaries
+        const sharpestFrame = frames.reduce((prev, curr) =>
+            curr.blurScore > prev.blurScore ? curr : prev
+        );
+
+        const blurriestFrame = frames.reduce((prev, curr) =>
+            curr.blurScore < prev.blurScore ? curr : prev
+        );
+
+        // Find frame closest to threshold
+        const thresholdFrame = frames.reduce((prev, curr) =>
+            Math.abs(curr.blurScore - threshold) < Math.abs(prev.blurScore - threshold) ? curr : prev
+        );
+
+        // Update counts
+        const keptCount = frames.filter(f => f.blurScore >= threshold).length;
+        const removedCount = frames.length - keptCount;
+
+        this.elements.keptFramesCount.textContent = keptCount;
+        this.elements.removedFramesCount.textContent = removedCount;
+        this.elements.thresholdBlurScore.textContent = threshold;
+
+        // Render previews
+        this.renderFramePreview(sharpestFrame, this.elements.sharpestPreview);
+        this.renderFramePreview(thresholdFrame, this.elements.thresholdPreview);
+        this.renderFramePreview(blurriestFrame, this.elements.blurriestPreview);
+    }
+
+    renderFramePreview(frame, canvas) {
+        if (!frame || !canvas) return;
+
+        // Create image from frame data
+        const blob = new Blob([frame.data], { type: `image/${this.currentSettings.format === 'png' ? 'png' : 'jpeg'}` });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+
+        img.onload = () => {
+            const ctx = canvas.getContext('2d');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            URL.revokeObjectURL(url);
+        };
+
+        img.src = url;
+    }
+
+    async proceedToZipCreation(frames) {
+        try {
+            this.state.processing = true;
+
+            // Hide quality section, show progress
+            this.elements.qualitySection.classList.add('hidden');
+            this.elements.progressSection.classList.remove('hidden');
+
+            // Create ZIP
+            this.updateProgress('Creating ZIP archive...', 0);
+
+            const zipBlob = await this.extractor.createZip(
+                frames,
+                this.currentSettings.namingPattern,
+                this.currentSettings.customName,
+                this.currentSettings.format,
+                (progress) => {
+                    this.updateProgress('Creating ZIP archive...', progress);
+                }
+            );
+
+            this.state.extractedZip = zipBlob;
+
+            // Show result
+            this.elements.progressSection.classList.add('hidden');
+            this.elements.resultSection.classList.remove('hidden');
+            this.elements.resultSummary.textContent = `${frames.length} frames extracted successfully (${Utils.formatBytes(zipBlob.size)})`;
+
+        } catch (error) {
+            console.error('ZIP creation error:', error);
+            alert('Failed to create ZIP: ' + error.message);
+        } finally {
+            this.state.processing = false;
+        }
     }
 
     downloadZip() {
@@ -1022,6 +1418,7 @@ class UIController {
         this.elements.actionsSection.classList.add('hidden');
         this.elements.progressSection.classList.add('hidden');
         this.elements.cancelBtn.classList.add('hidden');
+        this.elements.qualitySection.classList.add('hidden');
         this.elements.resultSection.classList.add('hidden');
 
         if (this.timeline) {

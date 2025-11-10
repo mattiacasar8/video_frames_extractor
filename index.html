@@ -131,6 +131,32 @@
                     <input type="text" id="customName" placeholder="my_video">
                     <span class="setting-hint">Used for {name} in pattern</span>
                 </div>
+
+                <!-- Blur Detection Settings -->
+                <div class="setting-group full-width">
+                    <label>
+                        <input type="checkbox" id="useBlurDetection">
+                        Enable Blur Detection (Smart Frame Selection)
+                    </label>
+                    <span class="setting-hint">Extracts multiple frames and selects the sharpest one</span>
+                </div>
+
+                <div class="setting-group blur-settings hidden" id="blurSettings">
+                    <label for="blurComparisonCount">Frames to Compare</label>
+                    <select id="blurComparisonCount">
+                        <option value="2" selected>2 frames</option>
+                        <option value="3">3 frames</option>
+                        <option value="4">4 frames</option>
+                        <option value="5">5 frames</option>
+                    </select>
+                    <span class="setting-hint">More = better selection, slower</span>
+                </div>
+
+                <div class="setting-group blur-settings hidden">
+                    <label for="blurComparisonWindow">Comparison Window (seconds)</label>
+                    <input type="number" id="blurComparisonWindow" value="1.0" min="0.1" max="5.0" step="0.1">
+                    <span class="setting-hint">Time range to search for sharp frame</span>
+                </div>
             </div>
 
             <div class="estimate-info" id="estimateInfo">
@@ -167,11 +193,73 @@
             <div class="progress-bar">
                 <div class="progress-fill" id="progressFill"></div>
             </div>
+            <div class="progress-stats">
+                <div class="progress-stat">
+                    <span class="stat-label">Speed:</span>
+                    <span class="stat-value" id="progressSpeed">0 fps</span>
+                </div>
+                <div class="progress-stat">
+                    <span class="stat-label">ETA:</span>
+                    <span class="stat-value" id="progressETA">Calculating...</span>
+                </div>
+            </div>
             <div class="progress-details" id="progressDetails"></div>
             <button class="btn btn-secondary btn-cancel hidden" id="cancelBtn">
                 <span class="btn-icon">✕</span>
                 Cancel
             </button>
+        </section>
+
+        <!-- Quality Review Section -->
+        <section class="quality-section hidden" id="qualitySection">
+            <h2>Quality Analysis</h2>
+            <p class="quality-intro">Review extracted frames and filter by blur threshold</p>
+
+            <div class="quality-controls">
+                <div class="quality-control-group">
+                    <label for="blurThreshold">Blur Threshold</label>
+                    <input type="range" id="blurThreshold" min="0" max="1000" step="10" value="100">
+                    <span class="quality-hint">Frames below this threshold will be removed</span>
+                </div>
+                <div class="quality-stats">
+                    <div class="quality-stat">
+                        <span class="stat-label">Total Frames:</span>
+                        <span class="stat-value" id="totalFramesCount">0</span>
+                    </div>
+                    <div class="quality-stat">
+                        <span class="stat-label">Kept:</span>
+                        <span class="stat-value stat-success" id="keptFramesCount">0</span>
+                    </div>
+                    <div class="quality-stat">
+                        <span class="stat-label">Removed:</span>
+                        <span class="stat-value stat-danger" id="removedFramesCount">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="quality-preview">
+                <div class="preview-item">
+                    <h4>Sharpest Frame (Score: <span id="maxBlurScore">0</span>)</h4>
+                    <canvas id="sharpestPreview" class="preview-canvas"></canvas>
+                </div>
+                <div class="preview-item">
+                    <h4>Threshold Frame (Score: <span id="thresholdBlurScore">0</span>)</h4>
+                    <canvas id="thresholdPreview" class="preview-canvas"></canvas>
+                </div>
+                <div class="preview-item">
+                    <h4>Blurriest Frame (Score: <span id="minBlurScore">0</span>)</h4>
+                    <canvas id="blurriestPreview" class="preview-canvas"></canvas>
+                </div>
+            </div>
+
+            <div class="quality-actions">
+                <button class="btn btn-secondary" id="skipQualityBtn">
+                    Skip Quality Filter
+                </button>
+                <button class="btn btn-primary" id="applyQualityBtn">
+                    Apply Filter & Continue
+                </button>
+            </div>
         </section>
 
         <!-- Result Section -->
