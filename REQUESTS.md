@@ -4,8 +4,6 @@ This document contains potential improvements, features, and enhancements for th
 
 ---
 
-## 🎯 High Priority Features
-
 ### 1. Advanced Frame Selection Options
 
 **Current State:** When in queue mode, all videos are extracted in full (start to end).
